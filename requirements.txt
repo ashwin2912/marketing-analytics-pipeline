@@ -1,18 +1,13 @@
 # Core data processing and analysis
 pandas>=1.5.0
 
-# Development and testing dependencies (optional)
+# Testing dependencies 
 pytest>=6.0.0
-pytest-cov>=2.0.0
 
-# Data visualization (optional, for analysis)
+# Data visualization
 matplotlib>=3.3.0
 seaborn>=0.11.0
 
-# Jupyter notebook support (optional)
+# Jupyter notebook support
 jupyter>=1.0.0
 ipykernel>=6.0.0
-
-# Code quality (optional)
-black>=21.0.0
-flake8>=3.8.0
