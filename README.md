@@ -9,23 +9,6 @@ This pipeline processes sales data through three analytical layers:
 - **Layer 2 (Warehouse)**: Dimensional modeling with star schema design
 - **Layer 3 (Business)**: Customer analytics, segmentation, and automated insights
 
-## Quick Start
-
-```bash
-# Clone and setup
-git clone <repository-url>
-cd marketing-analytics-pipeline
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the pipeline
-python run_pipeline.py
-
-# Run tests
-python test_pipeline.py --quick
-```
-
 ## Project Structure
 
 ```
@@ -41,6 +24,8 @@ python test_pipeline.py --quick
 │   │   └── HEC_testing_data_sample_2_.csv
 │   ├── staging.db                 # Layer 1: Cleaned data
 │   └── warehouse.db               # Layer 2: Dimensional model
+├── notebooks/                     # Analysis and exploration
+│   └── database_explorer.ipynb   # Interactive database table explorer
 ├── pipeline/                      # Core pipeline modules
 │   ├── __init__.py               # Package initialization
 │   ├── layer1_staging.py         # Data ingestion and cleaning
@@ -61,8 +46,15 @@ python run_pipeline.py [path/to/your/data.csv]
 ```
 
 ### Testing
+
+**Run the comprehensive pipeline test:**
 ```bash
-python test_pipeline.py --enhanced
+python test_pipeline.py
+```
+
+**Clean up test environment:**
+```bash
+python test_pipeline.py --cleanup
 ```
 
 ## Input Data Format
@@ -139,6 +131,24 @@ The pipeline expects CSV data with columns:
 ## Troubleshooting
 
 **Module import errors**: Ensure virtual environment is activated and dependencies installed
-**Database locked errors**: Close connections and retry with `python test_pipeline.py --cleanup`
-**Column format errors**: Verify CSV format matches expected schema
-**Pipeline failures**: Run `python test_pipeline.py --debug-warehouse` for detailed diagnostics
+```bash
+pip install -r requirements.txt
+```
+
+**Database locked errors**: Clean up test environment and retry
+```bash
+python test_pipeline.py --cleanup
+```
+
+**Column format errors**: Verify CSV format matches expected schema (Date, Customer ID, Order ID, Sales)
+
+**Pipeline failures**: Check logs in `data/pipeline.log` and run comprehensive test
+```bash
+python test_pipeline.py
+```
+
+**Test Results**:
+- **Enhanced Components Success Rate**: Should be 100%
+- **Data Quality Success Rate**: Should be 100% 
+- **Pipeline Success Rate**: Should be 85%+
+- **Overall Success Rate**: Should be 70%+
