@@ -42,7 +42,13 @@ class StagingLayer:
             )
         """)
         
-        # Staging table with basic cleaning
+        """
+        Staging table with basic cleaning
+        Removed unnamed_0 -> might be the original dataframe index that was exported
+        Converted date_raw to Date Type
+        Renamed sales -> sales_amount for better clarity
+        Added data_quality_flag
+        """
         self.staging_conn.execute("""
             CREATE TABLE IF NOT EXISTS stg_sales_cleaned (
                 date_parsed DATE,
@@ -76,7 +82,7 @@ class StagingLayer:
             }
             df = df.rename(columns=column_mapping)
             
-            # Add metadata columns
+            # Add metadata columns to track when the file was loaded and where it came from
             df['load_timestamp'] = datetime.now()
             df['source_file'] = os.path.basename(csv_file_path)
             
@@ -101,12 +107,12 @@ class StagingLayer:
     def _run_raw_data_quality_checks(self, run_id: str):
         """Run data quality checks on raw data"""
         
-        # Check minimum row count
+        # Check minimum row count #How do I make this dynamic based on previous runs? Or based on expected data size?
         self.dq_checker.check_row_count(
             self.staging_conn, 'stg_sales_raw', min_rows=1000, run_id=run_id
         )
         
-        # Check for null customer IDs
+        # Check for null customer IDs 
         self.dq_checker.check_null_percentage(
             self.staging_conn, 'stg_sales_raw', 'customer_id', max_null_pct=0.0, run_id=run_id
         )
@@ -121,9 +127,9 @@ class StagingLayer:
             self.staging_conn, 'stg_sales_raw', 'sales', max_null_pct=0.0, run_id=run_id
         )
         
-        # Check unique customers count
+        # Check unique customers count #This needs to be dynamic too
         self.dq_checker.check_unique_count(
-            self.staging_conn, 'stg_sales_raw', 'customer_id', min_unique=1000, run_id=run_id
+            self.staging_conn, 'stg_sales_raw', 'customer_id', min_unique=30000, run_id=run_id
         )
         
     def clean_and_validate_data(self) -> str:
@@ -132,7 +138,7 @@ class StagingLayer:
         run_id = self.orchestrator.log_pipeline_run('STAGING', 'stg_sales_cleaned', 'STARTED')
         
         try:
-            # Clear existing data first
+            # Clear existing data first, this would ideally 
             self.staging_conn.execute("DELETE FROM stg_sales_cleaned")
             
             # Clean and validate data using SQL
@@ -294,7 +300,6 @@ def run_staging_pipeline(csv_file_path: str):
 
 # Example usage
 if __name__ == "__main__":
-    # This would typically be called with the path to your CSV file
     csv_path = "path/to/your/sales_data.csv"  # Update this path
     
     try:

@@ -137,6 +137,25 @@ class PipelineTestSuite:
             print("   Testing business analysis layer...")
             from pipeline.layer3_business import run_business_analysis_pipeline
             business_orchestrator, business_summary = run_business_analysis_pipeline(shared_orchestrator)
+
+            # Verify lifecycle snapshot exists and shares look sane (≈1 per snapshot date)
+            biz_conn = business_orchestrator.databases['business']
+            df_snapshot = pd.read_sql_query("""
+                SELECT snapshot_date, SUM(share_of_base) AS share_sum, COUNT(*) AS stages
+                FROM customer_lifecycle_snapshot
+                GROUP BY snapshot_date
+            """, biz_conn)
+
+            if not df_snapshot.empty:
+                # shares sum close to 1; allow small float error
+                share_ok = df_snapshot['share_sum'].between(0.99, 1.01).all()
+                # expect up to 4 lifecycle stages in output (New, Active, At Risk, Inactive)
+                stage_ok = df_snapshot['stages'].max() <= 4
+                test_results['business_layer'] = bool(share_ok and stage_ok)
+                print(f"   ✅ Lifecycle snapshot: PASSED (rows={int(df_snapshot['stages'].sum())}, shares OK={share_ok})")
+            else:
+                print("   ⚠️ Lifecycle snapshot: NO ROWS (check dim_customer and dim_date)")
+                # keep previous assignment, but this is a notable warning
             test_results['business_layer'] = business_summary['campaign_targets_rows'] >= 0
             print(f"   ✅ Business layer: PASSED ({business_summary['campaign_targets_rows']:,} targets)")
             

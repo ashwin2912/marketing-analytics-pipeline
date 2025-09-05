@@ -140,7 +140,7 @@ class WarehouseLayer:
             """)
             min_date, max_date = cursor.fetchone()
             
-            # Create date dimension using simpler approach from staging dates
+            # Creating date dimension
             self.warehouse_conn.execute("""
                 INSERT OR REPLACE INTO dim_date 
                 (date_id, full_date, year, quarter, month, month_name, month_abbr,

@@ -105,6 +105,20 @@ class BusinessAnalysisLayer:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Customer lifecycle snapshot (daily headcount by stage)
+        self.business_conn.execute("""
+            CREATE TABLE IF NOT EXISTS customer_lifecycle_snapshot (
+                snapshot_date DATE,
+                lifecycle_stage TEXT,              -- New, Active, At Risk, Inactive
+                customers INTEGER,
+                share_of_base REAL,                -- customers / total_customers that day
+                avg_days_since_last_order REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (snapshot_date, lifecycle_stage)
+            )
+        """)
+
         
         self.business_conn.commit()
         self.logger.info("Business analysis schema created successfully")
@@ -115,7 +129,7 @@ class BusinessAnalysisLayer:
         run_id = self.orchestrator.log_pipeline_run('BUSINESS', 'monthly_metrics', 'STARTED')
         
         try:
-            # Clear existing data
+            # Clear existing data #Must update to handle new - incoming data
             self.business_conn.execute("DELETE FROM monthly_metrics")
             
             # Build monthly metrics from warehouse
@@ -398,6 +412,117 @@ class BusinessAnalysisLayer:
             self.orchestrator.log_pipeline_run('BUSINESS', 'campaign_targets', 'FAILED', 0, str(e))
             self.logger.error(f"Failed to build campaign targets: {str(e)}")
             raise
+
+    def build_customer_lifecycle_snapshot(self) -> str:
+        """
+        Build a daily snapshot of customers by lifecycle stage.
+
+        Stages:
+        - 'New'      : First-time buyers still within the early window (total_orders = 1 AND days_since_first_order <= 30)
+        - 'Active'   : days_since_last_order <= 30
+        - 'At Risk'  : 31 <= days_since_last_order <= 90
+        - 'Inactive' : days_since_last_order > 90
+
+        Notes:
+        - 'New' overrides status for first 30 days after first purchase to give marketing a clear onboarding cohort.
+        - Snapshot date is taken as the max known calendar date in warehouse.dim_date (so it aligns with the latest loaded data).
+        """
+
+        run_id = self.orchestrator.log_pipeline_run('BUSINESS', 'customer_lifecycle_snapshot', 'STARTED')
+
+        try:
+            # Determine the snapshot date from warehouse calendar (latest loaded date)
+            cursor = self.business_conn.execute("""
+                SELECT MAX(full_date) FROM warehouse.dim_date
+            """)
+            snapshot_date = cursor.fetchone()[0]
+
+            if snapshot_date is None:
+                # Nothing to snapshot yet
+                self.orchestrator.log_pipeline_run('BUSINESS', 'customer_lifecycle_snapshot', 'SUCCESS', 0)
+                self.logger.info("No dates available in warehouse.dim_date; lifecycle snapshot skipped.")
+                return run_id
+
+            # We rebuild the snapshot for the latest date (idempotent upsert)
+            self.business_conn.execute("""
+                DELETE FROM customer_lifecycle_snapshot
+                WHERE snapshot_date = ?
+            """, (snapshot_date,))
+
+            # Materialize lifecycle stage per rules. We compute a stage label per customer,
+            # then roll up counts and shares.
+            self.business_conn.execute("""
+                INSERT INTO customer_lifecycle_snapshot (
+                    snapshot_date, lifecycle_stage, customers, share_of_base, avg_days_since_last_order
+                )
+                WITH base AS (
+                    SELECT
+                        c.customer_id,
+                        c.total_orders,
+                        c.days_since_first_order,
+                        c.days_since_last_order,
+                        CASE
+                            WHEN c.total_orders = 1 AND c.days_since_first_order IS NOT NULL AND c.days_since_first_order <= 30
+                                THEN 'New'
+                            WHEN c.days_since_last_order IS NOT NULL AND c.days_since_last_order <= 30
+                                THEN 'Active'
+                            WHEN c.days_since_last_order BETWEEN 31 AND 90
+                                THEN 'At Risk'
+                            WHEN c.days_since_last_order > 90
+                                THEN 'Inactive'
+                            ELSE 'Inactive'  -- default if days_since_* is missing
+                        END AS lifecycle_stage
+                    FROM warehouse.dim_customer c
+                ),
+                totals AS (
+                    SELECT COUNT(*) AS total_customers FROM base
+                ),
+                rolled AS (
+                    SELECT
+                        ? AS snapshot_date,
+                        lifecycle_stage,
+                        COUNT(*) AS customers,
+                        AVG(CAST(days_since_last_order AS REAL)) AS avg_days_since_last_order
+                    FROM base
+                    GROUP BY lifecycle_stage
+                )
+                SELECT
+                    r.snapshot_date,
+                    r.lifecycle_stage,
+                    r.customers,
+                    ROUND(r.customers * 1.0 / t.total_customers, 4) AS share_of_base,
+                    ROUND(COALESCE(r.avg_days_since_last_order, 0), 2) AS avg_days_since_last_order
+                FROM rolled r
+                CROSS JOIN totals t
+                ORDER BY
+                    CASE r.lifecycle_stage
+                        WHEN 'New' THEN 1
+                        WHEN 'Active' THEN 2
+                        WHEN 'At Risk' THEN 3
+                        WHEN 'Inactive' THEN 4
+                        ELSE 99
+                    END
+            """, (snapshot_date,))
+
+            # Row count inserted for this snapshot date
+            row_count = self.business_conn.execute("""
+                SELECT COUNT(*) FROM customer_lifecycle_snapshot
+                WHERE snapshot_date = ?
+            """, (snapshot_date,)).fetchone()[0]
+
+            # Optional DQ checks
+            self._run_lifecycle_snapshot_quality_checks(run_id, snapshot_date)
+
+            self.business_conn.commit()
+            self.orchestrator.log_pipeline_run('BUSINESS', 'customer_lifecycle_snapshot', 'SUCCESS', row_count)
+            self.logger.info(f"Customer lifecycle snapshot built for {snapshot_date} with {row_count} rows.")
+            return run_id
+
+        except Exception as e:
+            self.orchestrator.log_pipeline_run('BUSINESS', 'customer_lifecycle_snapshot', 'FAILED', 0, str(e))
+            self.logger.error(f"Failed to build customer lifecycle snapshot: {str(e)}")
+            raise
+
             
     def generate_business_insights(self) -> str:
         """Generate business insights and recommendations"""
@@ -589,6 +714,48 @@ class BusinessAnalysisLayer:
                 run_id, 'customer_ltv_analysis', 'BUSINESS_RULE', 'valid_ltv_score_check',
                 "0", "ERROR", "FAILED", str(e)
             )
+    
+    def _run_lifecycle_snapshot_quality_checks(self, run_id: str, snapshot_date: str):
+        """Simple DQ checks: share sums to ~1.0 and no negative counts."""
+
+        try:
+            # shares should approximately sum to 1 (allow small floating error)
+            row = self.business_conn.execute("""
+                SELECT ROUND(SUM(share_of_base), 4) FROM customer_lifecycle_snapshot
+                WHERE snapshot_date = ?
+            """, (snapshot_date,)).fetchone()
+            share_sum = row[0] if row and row[0] is not None else 0.0
+            status = "PASSED" if 0.99 <= share_sum <= 1.01 else "FAILED"
+
+            self.orchestrator.log_data_quality_check(
+                run_id, 'customer_lifecycle_snapshot', 'AGGREGATE', 'share_of_base_sums_to_1',
+                "1.0 ± 0.01", str(share_sum), status
+            )
+        except Exception as e:
+            self.orchestrator.log_data_quality_check(
+                run_id, 'customer_lifecycle_snapshot', 'AGGREGATE', 'share_of_base_sums_to_1',
+                "1.0 ± 0.01", "ERROR", "FAILED", str(e)
+            )
+
+        try:
+            # no negative customers
+            row = self.business_conn.execute("""
+                SELECT COUNT(*) FROM customer_lifecycle_snapshot
+                WHERE snapshot_date = ? AND customers < 0
+            """, (snapshot_date,)).fetchone()
+            negatives = row[0] if row else 0
+            status = "PASSED" if negatives == 0 else "FAILED"
+
+            self.orchestrator.log_data_quality_check(
+                run_id, 'customer_lifecycle_snapshot', 'BUSINESS_RULE', 'non_negative_counts',
+                "0", str(negatives), status
+            )
+        except Exception as e:
+            self.orchestrator.log_data_quality_check(
+                run_id, 'customer_lifecycle_snapshot', 'BUSINESS_RULE', 'non_negative_counts',
+                "0", "ERROR", "FAILED", str(e)
+            )
+
             
     def _run_campaign_targets_quality_checks(self, run_id: str):
         """Run data quality checks on campaign targets"""
@@ -604,7 +771,7 @@ class BusinessAnalysisLayer:
         summary = {}
         
         # Table row counts
-        tables = ['monthly_metrics', 'cohort_analysis', 'customer_ltv_analysis', 'campaign_targets', 'business_insights']
+        tables = ['monthly_metrics', 'cohort_analysis', 'customer_ltv_analysis', 'campaign_targets', 'business_insights','customer_lifecycle_snapshot']
         for table in tables:
             cursor = self.business_conn.execute(f"SELECT COUNT(*) FROM {table}")
             summary[f'{table}_rows'] = cursor.fetchone()[0]
@@ -661,12 +828,16 @@ def run_business_analysis_pipeline(orchestrator=None):
         
         business.logger.info("Building customer LTV analysis...")
         business.build_customer_ltv_analysis()
+
+        business.logger.info("Building customer lifecycle snapshot...")
+        business.build_customer_lifecycle_snapshot()
         
         business.logger.info("Building campaign targets...")
         business.build_campaign_targets()
         
         business.logger.info("Generating business insights...")
         business.generate_business_insights()
+
         
         # Get summary
         summary = business.get_business_summary()
@@ -678,6 +849,7 @@ def run_business_analysis_pipeline(orchestrator=None):
         print(f"Cohort analysis: {summary['cohort_analysis_rows']:,} rows")
         print(f"Customer LTV analysis: {summary['customer_ltv_analysis_rows']:,} rows")
         print(f"Campaign targets: {summary['campaign_targets_rows']:,} rows")
+        print(f"Customer lifecycle snapshot: {summary['customer_lifecycle_snapshot_rows']:,} rows")
         print(f"Business insights: {summary['business_insights_rows']:,} rows")
         print(f"\nActionable Intelligence:")
         print(f"Active campaigns ready: {summary['active_campaigns']:,}")
