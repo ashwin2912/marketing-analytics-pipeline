@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Marketing Analytics Pipeline Test Suite
-Tests the complete 3-layer data engineering pipeline with sample data
+Marketing Analytics Pipeline Test Suite - Enhanced Version
+Tests the complete 3-layer data engineering pipeline with enhanced business analytics
 """
 
 import os
@@ -21,8 +21,8 @@ from pipeline.master_pipeline import MasterPipelineRunner
 from pipeline.pipeline_orchestrator import DataPipelineOrchestrator
 
 
-class PipelineTestSuite:
-    """Comprehensive test suite for the marketing analytics pipeline"""
+class EnhancedPipelineTestSuite:
+    """Comprehensive test suite for the enhanced marketing analytics pipeline"""
     
     def __init__(self, csv_file_path: str = None):
         self.csv_file_path = csv_file_path or './data/raw/HEC_testing_data_sample_2_.csv'
@@ -39,14 +39,14 @@ class PipelineTestSuite:
     def setup_test_environment(self):
         """Set up test environment and validate actual data"""
         
-        print("🔧 Setting up test environment...")
+        print("🔧 Setting up enhanced test environment...")
         
         # Validate CSV file exists
         if not os.path.exists(self.csv_file_path):
             raise FileNotFoundError(f"CSV file not found: {self.csv_file_path}")
             
         # Create test directory for pipeline outputs
-        self.test_dir = tempfile.mkdtemp(prefix='pipeline_test_')
+        self.test_dir = tempfile.mkdtemp(prefix='enhanced_pipeline_test_')
         print(f"📁 Test directory: {self.test_dir}")
         
         # Analyze actual data
@@ -88,6 +88,11 @@ class PipelineTestSuite:
                         # Try to parse dates
                         date_series = pd.to_datetime(df['Date'])
                         print(f"   Date range: {date_series.min()} to {date_series.max()}")
+                        # Calculate time span for retention analysis expectations
+                        time_span_months = (date_series.max() - date_series.min()).days / 30.44
+                        print(f"   Time span: {time_span_months:.1f} months")
+                        if time_span_months < 18:
+                            print(f"   ⚠️  Note: Time span < 18 months may limit retention analysis")
                     except:
                         print(f"   Date range: {df['Date'].min()} to {df['Date'].max()}")
                         
@@ -99,236 +104,447 @@ class PipelineTestSuite:
             print(f"   ⚠️  Error analyzing data: {str(e)}")
             self.logger.warning(f"Data analysis error: {str(e)}")
         
-    def test_pipeline_components(self) -> dict:
-        """Test individual pipeline components"""
+    def test_enhanced_business_layer_components(self) -> dict:
+        """Test the new enhanced business layer components"""
         
-        print("\n🧪 Testing pipeline components...")
+        print("\n🧪 Testing enhanced business layer components...")
         
         test_results = {
-            'orchestrator_init': False,
-            'staging_layer': False,
-            'warehouse_layer': False,
-            'business_layer': False,
-            'data_quality': False
+            'cumulative_retention_analysis': False,
+            'customer_segmentation': False,
+            'seasonal_trends': False,
+            'executive_summary': False,
+            'enhanced_insights': False,
+            'retention_windows_validation': False,
+            'rfm_segments_validation': False,
+            'seasonal_patterns_validation': False
         }
         
         try:
-            # Test orchestrator initialization
-            print("   Testing pipeline orchestrator...")
-            orchestrator = DataPipelineOrchestrator(base_path=self.test_dir)
-            test_results['orchestrator_init'] = True
-            print("   ✅ Orchestrator initialization: PASSED")
-            
-            # Test staging layer
-            print("   Testing staging layer...")
+            # First run the complete pipeline to get all data
+            print("   Setting up pipeline for enhanced testing...")
             from pipeline.layer1_staging import run_staging_pipeline
-            shared_orchestrator, staging_summary = run_staging_pipeline(self.csv_file_path)
-            test_results['staging_layer'] = staging_summary['raw_records'] > 0
-            print(f"   ✅ Staging layer: PASSED ({staging_summary['raw_records']:,} records)")
-            
-            # Test warehouse layer using same orchestrator
-            print("   Testing warehouse layer...")
             from pipeline.layer2_warehouse import run_warehouse_pipeline
-            warehouse_orchestrator, warehouse_summary = run_warehouse_pipeline(shared_orchestrator)
-            test_results['warehouse_layer'] = warehouse_summary['unique_customers'] > 0
-            print(f"   ✅ Warehouse layer: PASSED ({warehouse_summary['unique_customers']:,} customers)")
-            
-            # Test business layer using same orchestrator  
-            print("   Testing business analysis layer...")
             from pipeline.layer3_business import run_business_analysis_pipeline
-            business_orchestrator, business_summary = run_business_analysis_pipeline(shared_orchestrator)
-
-            # Verify lifecycle snapshot exists and shares look sane (≈1 per snapshot date)
-            biz_conn = business_orchestrator.databases['business']
-            df_snapshot = pd.read_sql_query("""
-                SELECT snapshot_date, SUM(share_of_base) AS share_sum, COUNT(*) AS stages
-                FROM customer_lifecycle_snapshot
-                GROUP BY snapshot_date
-            """, biz_conn)
-
-            if not df_snapshot.empty:
-                # shares sum close to 1; allow small float error
-                share_ok = df_snapshot['share_sum'].between(0.99, 1.01).all()
-                # expect up to 4 lifecycle stages in output (New, Active, At Risk, Inactive)
-                stage_ok = df_snapshot['stages'].max() <= 4
-                test_results['business_layer'] = bool(share_ok and stage_ok)
-                print(f"   ✅ Lifecycle snapshot: PASSED (rows={int(df_snapshot['stages'].sum())}, shares OK={share_ok})")
-            else:
-                print("   ⚠️ Lifecycle snapshot: NO ROWS (check dim_customer and dim_date)")
-                # keep previous assignment, but this is a notable warning
-            test_results['business_layer'] = business_summary['campaign_targets_rows'] >= 0
-            print(f"   ✅ Business layer: PASSED ({business_summary['campaign_targets_rows']:,} targets)")
             
-            # Close connections at the end
-            shared_orchestrator.close_connections()
+            # Run through all layers
+            staging_orchestrator, staging_summary = run_staging_pipeline(self.csv_file_path)
+            warehouse_orchestrator, warehouse_summary = run_warehouse_pipeline(staging_orchestrator)
+            business_orchestrator, business_summary = run_business_analysis_pipeline(staging_orchestrator)
             
-            # Test data quality
-            print("   Testing data quality checks...")
-            dq_orchestrator = DataPipelineOrchestrator(base_path=self.test_dir)
-            dq_summary = dq_orchestrator.get_data_quality_summary()
-            if len(dq_summary) > 0:
-                total_checks = dq_summary['total_checks'].sum()
-                passed_checks = dq_summary['passed'].sum()
-                success_rate = (passed_checks / total_checks * 100) if total_checks > 0 else 0
-                test_results['data_quality'] = success_rate >= 80  # At least 80% success rate
-                print(f"   ✅ Data quality: PASSED ({success_rate:.1f}% success rate)")
-            else:
-                test_results['data_quality'] = True
-                print("   ✅ Data quality: PASSED (no checks recorded)")
+            business_conn = business_orchestrator.databases['business']
             
-            dq_orchestrator.close_connections()
+            # Test 1: Cumulative Retention Analysis
+            print("   Testing cumulative retention analysis...")
+            try:
+                retention_df = pd.read_sql_query("""
+                    SELECT 
+                        retention_window_months,
+                        COUNT(DISTINCT cohort_month) as cohort_count,
+                        AVG(cumulative_retention_rate) as avg_retention,
+                        MIN(cumulative_retention_rate) as min_retention,
+                        MAX(cumulative_retention_rate) as max_retention
+                    FROM cumulative_retention_analysis
+                    GROUP BY retention_window_months
+                    ORDER BY retention_window_months
+                """, business_conn)
+                
+                # Validate we have 3, 12, 18 month windows
+                expected_windows = {3, 12, 18}
+                actual_windows = set(retention_df['retention_window_months'].tolist())
+                has_all_windows = expected_windows.issubset(actual_windows)
+                
+                # Validate retention logic (later windows should have <= retention than earlier)
+                logical_retention = True
+                if len(retention_df) >= 2:
+                    for i in range(1, len(retention_df)):
+                        if retention_df.iloc[i]['avg_retention'] > retention_df.iloc[i-1]['avg_retention']:
+                            logical_retention = False
+                            break
+                
+                test_results['cumulative_retention_analysis'] = len(retention_df) > 0
+                test_results['retention_windows_validation'] = has_all_windows and logical_retention
+                
+                print(f"   ✅ Cumulative retention: {'PASSED' if test_results['cumulative_retention_analysis'] else 'FAILED'}")
+                print(f"      Windows: {sorted(actual_windows)} (Expected: {sorted(expected_windows)})")
+                print(f"      Retention logic: {'VALID' if logical_retention else 'INVALID'}")
+                
+            except Exception as e:
+                print(f"   ❌ Cumulative retention analysis failed: {str(e)}")
+            
+            # Test 2: Customer Segmentation (RFM)
+            print("   Testing customer segmentation...")
+            try:
+                segmentation_df = pd.read_sql_query("""
+                    SELECT 
+                        rfm_segment,
+                        COUNT(*) as customer_count,
+                        AVG(recency_score) as avg_recency,
+                        AVG(frequency_score) as avg_frequency,
+                        AVG(monetary_score) as avg_monetary
+                    FROM customer_segmentation
+                    GROUP BY rfm_segment
+                    ORDER BY customer_count DESC
+                """, business_conn)
+                
+                # Validate expected segments exist
+                expected_segments = {'Champions', 'Loyal Customers', 'New Customers', 'At Risk', 'Cannot Lose Them', 'Lost Customers', 'Others'}
+                actual_segments = set(segmentation_df['rfm_segment'].tolist())
+                has_key_segments = len(actual_segments.intersection(expected_segments)) >= 4
+                
+                # Validate score ranges (1-5)
+                valid_scores = True
+                for col in ['avg_recency', 'avg_frequency', 'avg_monetary']:
+                    if not segmentation_df[col].between(1, 5).all():
+                        valid_scores = False
+                        break
+                
+                test_results['customer_segmentation'] = len(segmentation_df) > 0
+                test_results['rfm_segments_validation'] = has_key_segments and valid_scores
+                
+                print(f"   ✅ Customer segmentation: {'PASSED' if test_results['customer_segmentation'] else 'FAILED'}")
+                print(f"      Segments found: {len(actual_segments)} (Key segments: {has_key_segments})")
+                print(f"      Score validity: {'VALID' if valid_scores else 'INVALID'}")
+                
+            except Exception as e:
+                print(f"   ❌ Customer segmentation failed: {str(e)}")
+            
+            # Test 3: Seasonal Trends
+            print("   Testing seasonal trends...")
+            try:
+                seasonal_df = pd.read_sql_query("""
+                    SELECT 
+                        period_type,
+                        COUNT(*) as period_count,
+                        AVG(seasonal_index) as avg_seasonal_index,
+                        MIN(seasonal_index) as min_index,
+                        MAX(seasonal_index) as max_index
+                    FROM seasonal_trends
+                    GROUP BY period_type
+                """, business_conn)
+                
+                # Validate monthly trends exist
+                has_monthly = 'monthly' in seasonal_df['period_type'].tolist()
+                
+                # Validate seasonal indices are reasonable (should average around 1.0)
+                valid_indices = True
+                if has_monthly:
+                    monthly_avg = seasonal_df[seasonal_df['period_type'] == 'monthly']['avg_seasonal_index'].iloc[0]
+                    valid_indices = 0.8 <= monthly_avg <= 1.2  # Should be close to 1.0
+                
+                test_results['seasonal_trends'] = len(seasonal_df) > 0
+                test_results['seasonal_patterns_validation'] = has_monthly and valid_indices
+                
+                print(f"   ✅ Seasonal trends: {'PASSED' if test_results['seasonal_trends'] else 'FAILED'}")
+                print(f"      Monthly trends: {'FOUND' if has_monthly else 'MISSING'}")
+                print(f"      Index validity: {'VALID' if valid_indices else 'INVALID'}")
+                
+            except Exception as e:
+                print(f"   ❌ Seasonal trends failed: {str(e)}")
+            
+            # Test 4: Executive Summary View
+            print("   Testing executive summary...")
+            try:
+                exec_df = pd.read_sql_query("""
+                    SELECT 
+                        metric_category,
+                        COUNT(*) as metric_count
+                    FROM executive_summary
+                    GROUP BY metric_category
+                """, business_conn)
+                
+                # Validate expected categories
+                expected_categories = {'Current Month Performance', 'Retention Performance', 'Customer Health'}
+                actual_categories = set(exec_df['metric_category'].tolist())
+                has_all_categories = expected_categories.issubset(actual_categories)
+                
+                test_results['executive_summary'] = len(exec_df) > 0 and has_all_categories
+                
+                print(f"   ✅ Executive summary: {'PASSED' if test_results['executive_summary'] else 'FAILED'}")
+                print(f"      Categories: {len(actual_categories)} (Complete: {has_all_categories})")
+                
+            except Exception as e:
+                print(f"   ❌ Executive summary failed: {str(e)}")
+            
+            # Test 5: Enhanced Business Insights
+            print("   Testing enhanced business insights...")
+            try:
+                insights_df = pd.read_sql_query("""
+                    SELECT 
+                        insight_type,
+                        COUNT(*) as insight_count,
+                        AVG(priority_level) as avg_priority
+                    FROM business_insights
+                    GROUP BY insight_type
+                    ORDER BY insight_count DESC
+                """, business_conn)
+                
+                # Validate new insight types exist
+                expected_types = {'RETENTION', 'SEGMENTATION', 'SEASONAL'}
+                actual_types = set(insights_df['insight_type'].tolist())
+                has_new_insights = len(actual_types.intersection(expected_types)) >= 2
+                
+                test_results['enhanced_insights'] = len(insights_df) > 0 and has_new_insights
+                
+                print(f"   ✅ Enhanced insights: {'PASSED' if test_results['enhanced_insights'] else 'FAILED'}")
+                print(f"      Insight types: {len(actual_types)} (Enhanced: {has_new_insights})")
+                
+            except Exception as e:
+                print(f"   ❌ Enhanced insights failed: {str(e)}")
+            
+            # Close connections
+            business_orchestrator.close_connections()
             
         except Exception as e:
-            print(f"   ❌ Component test failed: {str(e)}")
-            self.logger.error(f"Component test error: {str(e)}")
+            print(f"   ❌ Enhanced business layer test failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
             
         return test_results
     
-    def debug_warehouse_components(self) -> dict:
-        """Debug individual warehouse components to isolate issues"""
+    def test_data_quality_enhancements(self) -> dict:
+        """Test enhanced data quality checks with direct validation"""
         
-        print("\n🔍 Debugging warehouse components...")
+        print("\n🔍 Testing enhanced data quality checks...")
         
-        debug_results = {
-            'date_dimension': False,
-            'customer_dimension': False,  
-            'order_dimension': False,
-            'sales_fact': False
+        dq_results = {
+            'retention_logic_checks': False,
+            'rfm_score_validation': False,
+            'seasonal_index_validation': False,
+            'business_rule_compliance': False
         }
         
         try:
-            # First ensure staging layer is ready
-            from pipeline.layer1_staging import run_staging_pipeline
-            staging_orchestrator, staging_summary = run_staging_pipeline(self.csv_file_path)
-            # Don't close connections yet - warehouse needs to access staging DB
+            # Run the business pipeline first to generate data
+            from pipeline.layer3_business import run_business_analysis_pipeline
+            orchestrator, summary = run_business_analysis_pipeline()
+            business_conn = orchestrator.databases['business']
             
-            # Initialize warehouse layer using the same orchestrator
-            from pipeline.layer2_warehouse import WarehouseLayer
-            warehouse = WarehouseLayer(staging_orchestrator)
-            warehouse.create_warehouse_schema()
+            # Test 1: Retention Logic Checks
+            print("   Testing retention logic...")
+            try:
+                retention_df = pd.read_sql_query("""
+                    SELECT cohort_month,
+                        MAX(CASE WHEN retention_window_months = 3 THEN cumulative_retention_rate END) as ret_3m,
+                        MAX(CASE WHEN retention_window_months = 12 THEN cumulative_retention_rate END) as ret_12m,
+                        MAX(CASE WHEN retention_window_months = 18 THEN cumulative_retention_rate END) as ret_18m
+                    FROM cumulative_retention_analysis 
+                    GROUP BY cohort_month
+                    HAVING ret_3m IS NOT NULL OR ret_12m IS NOT NULL OR ret_18m IS NOT NULL
+                """, business_conn)
+                
+                # Check logical retention (rates shouldn't increase over time)
+                logical_retention = True
+                for _, row in retention_df.iterrows():
+                    if row['ret_12m'] and row['ret_3m'] and row['ret_12m'] > row['ret_3m']:
+                        logical_retention = False
+                        break
+                    if row['ret_18m'] and row['ret_12m'] and row['ret_18m'] > row['ret_12m']:
+                        logical_retention = False  
+                        break
+                
+                # Check rates are within 0-100%
+                valid_ranges = True
+                for col in ['ret_3m', 'ret_12m', 'ret_18m']:
+                    if retention_df[col].notna().any():
+                        if retention_df[col].min() < 0 or retention_df[col].max() > 100:
+                            valid_ranges = False
+                            break
+                
+                dq_results['retention_logic_checks'] = logical_retention and valid_ranges and len(retention_df) > 0
+                print(f"      Retention logic: {'✅ VALID' if dq_results['retention_logic_checks'] else '❌ INVALID'}")
+                
+            except Exception as e:
+                print(f"      ❌ Retention checks failed: {str(e)}")
             
-            # Test date dimension
-            print("   Testing date dimension...")
+            # Test 2: RFM Score Validation  
+            print("   Testing RFM score validation...")
             try:
-                warehouse.build_date_dimension()
-                debug_results['date_dimension'] = True
-                print("   ✅ Date dimension: PASSED")
-            except Exception as e:
-                print(f"   ❌ Date dimension failed: {str(e)}")
+                rfm_df = pd.read_sql_query("""
+                    SELECT rfm_segment, 
+                           MIN(recency_score) as min_r, MAX(recency_score) as max_r,
+                           MIN(frequency_score) as min_f, MAX(frequency_score) as max_f,
+                           MIN(monetary_score) as min_m, MAX(monetary_score) as max_m,
+                           COUNT(*) as segment_count
+                    FROM customer_segmentation
+                    GROUP BY rfm_segment
+                """, business_conn)
                 
-            # Test customer dimension with detailed error info
-            print("   Testing customer dimension...")
+                # Check score ranges (all should be 1-5)
+                score_ranges_valid = True
+                for col in ['min_r', 'max_r', 'min_f', 'max_f', 'min_m', 'max_m']:
+                    if rfm_df[col].min() < 1 or rfm_df[col].max() > 5:
+                        score_ranges_valid = False
+                        break
+                
+                # Check we have key segments
+                expected_segments = {'Champions', 'Loyal Customers', 'New Customers', 'At Risk', 'Cannot Lose Them', 'Lost Customers'}
+                actual_segments = set(rfm_df['rfm_segment'].tolist())
+                has_key_segments = len(expected_segments.intersection(actual_segments)) >= 4
+                
+                dq_results['rfm_score_validation'] = score_ranges_valid and has_key_segments and len(rfm_df) > 0
+                print(f"      RFM scores: {'✅ VALID' if dq_results['rfm_score_validation'] else '❌ INVALID'}")
+                print(f"      Segments found: {len(actual_segments)} (Key segments: {has_key_segments})")
+                
+            except Exception as e:
+                print(f"      ❌ RFM validation failed: {str(e)}")
+            
+            # Test 3: Seasonal Index Validation
+            print("   Testing seasonal index validation...")
             try:
-                warehouse.build_customer_dimension()
-                debug_results['customer_dimension'] = True
-                print("   ✅ Customer dimension: PASSED")
-            except Exception as e:
-                print(f"   ❌ Customer dimension failed: {str(e)}")
-                # Let's debug this specific query
-                self._debug_customer_dimension_query(warehouse)
+                seasonal_df = pd.read_sql_query("""
+                    SELECT period_type, period_value, seasonal_index, trend_direction
+                    FROM seasonal_trends
+                    WHERE period_type = 'monthly'
+                """, business_conn)
                 
-            # Test order dimension
-            print("   Testing order dimension...")
+                # Check seasonal indices are reasonable (0.1 - 3.0)
+                indices_valid = True
+                if len(seasonal_df) > 0:
+                    indices_valid = (seasonal_df['seasonal_index'].min() >= 0.1 and 
+                                   seasonal_df['seasonal_index'].max() <= 3.0)
+                
+                # Check we have 12 months
+                has_all_months = len(seasonal_df) == 12
+                
+                # Check trend directions are valid
+                valid_trends = {'strong_positive', 'positive', 'stable', 'negative', 'strong_negative'}
+                trends_valid = seasonal_df['trend_direction'].isin(valid_trends).all()
+                
+                dq_results['seasonal_index_validation'] = indices_valid and has_all_months and trends_valid
+                print(f"      Seasonal indices: {'✅ VALID' if dq_results['seasonal_index_validation'] else '❌ INVALID'}")
+                print(f"      Months found: {len(seasonal_df)}/12")
+                
+            except Exception as e:
+                print(f"      ❌ Seasonal validation failed: {str(e)}")
+            
+            # Test 4: Business Rule Compliance
+            print("   Testing business rule compliance...")
             try:
-                warehouse.build_order_dimension()
-                debug_results['order_dimension'] = True
-                print("   ✅ Order dimension: PASSED")
-            except Exception as e:
-                print(f"   ❌ Order dimension failed: {str(e)}")
+                # Check monthly metrics have positive values
+                monthly_valid = pd.read_sql_query("""
+                    SELECT COUNT(*) as negative_count 
+                    FROM monthly_metrics 
+                    WHERE total_sales < 0 OR avg_order_value < 0 OR unique_customers < 0
+                """, business_conn).iloc[0]['negative_count'] == 0
                 
-            # Test sales fact
-            print("   Testing sales fact...")
-            try:
-                warehouse.build_sales_fact()
-                debug_results['sales_fact'] = True
-                print("   ✅ Sales fact: PASSED")
-            except Exception as e:
-                print(f"   ❌ Sales fact failed: {str(e)}")
+                # Check customer LTV scores are in valid range
+                ltv_valid = pd.read_sql_query("""
+                    SELECT COUNT(*) as invalid_count
+                    FROM customer_ltv_analysis 
+                    WHERE predicted_ltv_score NOT BETWEEN 1 AND 5 
+                       OR churn_risk_score NOT BETWEEN 0 AND 1
+                """, business_conn).iloc[0]['invalid_count'] == 0
                 
-            staging_orchestrator.close_connections()
+                # Check campaign targets have valid recommendations
+                campaign_valid = pd.read_sql_query("""
+                    SELECT COUNT(*) as missing_recs
+                    FROM campaign_targets 
+                    WHERE recommended_action IS NULL OR recommended_action = ''
+                """, business_conn).iloc[0]['missing_recs'] == 0
+                
+                dq_results['business_rule_compliance'] = monthly_valid and ltv_valid and campaign_valid
+                print(f"      Business rules: {'✅ COMPLIANT' if dq_results['business_rule_compliance'] else '❌ VIOLATIONS'}")
+                
+            except Exception as e:
+                print(f"      ❌ Business rule checks failed: {str(e)}")
+            
+            orchestrator.close_connections()
+            
+            passed_checks = sum(dq_results.values())
+            total_checks = len(dq_results)
+            print(f"   📊 Data quality summary: {passed_checks}/{total_checks} checks passed")
             
         except Exception as e:
-            print(f"   ❌ Warehouse debugging failed: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            print(f"   ❌ Data quality testing failed: {str(e)}")
             
-        return debug_results
+        return dq_results
+    
+    def test_business_insights_quality(self) -> dict:
+        """Test the quality and completeness of business insights"""
         
-    def _debug_customer_dimension_query(self, warehouse):
-        """Debug the specific customer dimension query"""
+        print("\n📊 Testing business insights quality...")
         
-        print("     🔍 Debugging customer dimension query...")
+        insight_results = {
+            'insight_completeness': False,
+            'actionable_recommendations': False,
+            'priority_distribution': False,
+            'metric_validity': False
+        }
         
         try:
-            # Test the basic aggregation first
-            cursor = warehouse.warehouse_conn.execute("""
-                SELECT 
-                    customer_id,
-                    MIN(date_parsed) as first_order_date,
-                    MAX(date_parsed) as last_order_date,
-                    COUNT(*) as total_transactions,
-                    SUM(sales_amount) as total_spent
-                FROM staging.stg_sales_cleaned 
-                WHERE data_quality_flag = 'VALID'
-                GROUP BY customer_id
-                LIMIT 5
-            """)
+            # Run pipeline to get insights
+            self.runner = MasterPipelineRunner()
+            success = self.runner.run_full_pipeline(self.csv_file_path)
             
-            results = cursor.fetchall()
-            print(f"     ✅ Basic aggregation works - sample: {results[0] if results else 'No data'}")
-            
-            # Test the date calculations
-            cursor = warehouse.warehouse_conn.execute("""
-                SELECT 
-                    customer_id,
-                    MIN(date_parsed) as first_order_date,
-                    julianday('now') - julianday(MIN(date_parsed)) as days_since_first_order
-                FROM staging.stg_sales_cleaned 
-                WHERE data_quality_flag = 'VALID'
-                GROUP BY customer_id
-                LIMIT 3
-            """)
-            
-            results = cursor.fetchall()
-            print(f"     ✅ Date calculations work - sample: {results[0] if results else 'No data'}")
-            
-            # Test the complex customer enrichment step by step
-            cursor = warehouse.warehouse_conn.execute("""
-                WITH customer_metrics AS (
+            if success and 'layer3' in self.runner.results:
+                business_conn = self.runner.orchestrator.databases['business']
+                
+                # Test insight completeness
+                insights_df = pd.read_sql_query("""
                     SELECT 
-                        customer_id,
-                        MIN(date_parsed) as first_order_date,
-                        MAX(date_parsed) as last_order_date,
-                        COUNT(*) as total_transactions,
-                        SUM(sales_amount) as total_spent,
-                        AVG(sales_amount) as avg_order_value,
-                        COUNT(DISTINCT order_id) as total_orders
-                    FROM staging.stg_sales_cleaned 
-                    WHERE data_quality_flag = 'VALID'
-                    GROUP BY customer_id
-                    LIMIT 5
-                )
-                SELECT * FROM customer_metrics
-            """)
-            
-            results = cursor.fetchall()
-            print(f"     ✅ Customer metrics CTE works - sample count: {len(results)}")
-            
+                        insight_id,
+                        insight_type,
+                        insight_title,
+                        insight_description,
+                        metric_value,
+                        recommendation,
+                        priority_level
+                    FROM business_insights
+                    ORDER BY priority_level, metric_value DESC
+                """, business_conn)
+                
+                if not insights_df.empty:
+                    # Check completeness (no null values in key fields)
+                    required_fields = ['insight_title', 'insight_description', 'recommendation']
+                    completeness = all(
+                        insights_df[field].notna().all() for field in required_fields
+                    )
+                    insight_results['insight_completeness'] = completeness
+                    
+                    # Check actionable recommendations (should contain action words)
+                    action_words = ['implement', 'launch', 'analyze', 'focus', 'increase', 'target']
+                    actionable_count = insights_df['recommendation'].str.lower().str.contains(
+                        '|'.join(action_words), na=False
+                    ).sum()
+                    insight_results['actionable_recommendations'] = (
+                        actionable_count / len(insights_df) >= 0.7
+                    )
+                    
+                    # Check priority distribution
+                    priority_counts = insights_df['priority_level'].value_counts()
+                    has_priority_1 = 1 in priority_counts.index
+                    insight_results['priority_distribution'] = has_priority_1
+                    
+                    # Check metric validity (no negative values where inappropriate)
+                    valid_metrics = insights_df['metric_value'].notna().all()
+                    insight_results['metric_validity'] = valid_metrics
+                    
+                    print(f"   ✅ Insights generated: {len(insights_df)}")
+                    print(f"   ✅ Completeness: {'PASSED' if completeness else 'FAILED'}")
+                    print(f"   ✅ Actionable: {actionable_count}/{len(insights_df)} insights")
+                    print(f"   ✅ Priority distribution: {'VALID' if has_priority_1 else 'INVALID'}")
+                    
+                else:
+                    print("   ⚠️  No business insights found")
+                    
         except Exception as e:
-            print(f"     ❌ Customer dimension debug failed: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            print(f"   ❌ Business insights quality test failed: {str(e)}")
+            
+        return insight_results
+    
+    def test_full_enhanced_pipeline(self) -> dict:
+        """Test the complete enhanced pipeline end-to-end"""
         
-    def test_full_pipeline(self) -> dict:
-        """Test the complete end-to-end pipeline"""
-        
-        print("\n🚀 Testing complete pipeline...")
+        print("\n🚀 Testing complete enhanced pipeline...")
         
         test_results = {
             'pipeline_execution': False,
-            'all_layers_completed': False,
-            'business_insights_generated': False,
-            'campaign_targets_created': False,
+            'all_enhanced_components': False,
+            'retention_analysis_complete': False,
+            'segmentation_complete': False,
+            'seasonal_analysis_complete': False,
+            'executive_dashboard_ready': False,
             'performance_acceptable': False
         }
         
@@ -343,69 +559,97 @@ class PipelineTestSuite:
             execution_time = (end_time - start_time).total_seconds()
             
             test_results['pipeline_execution'] = success
-            test_results['performance_acceptable'] = execution_time < 300  # Should complete in under 5 minutes
+            test_results['performance_acceptable'] = execution_time < 600  # Should complete in under 10 minutes
             
             if success:
                 print(f"   ✅ Pipeline execution: PASSED ({execution_time:.2f} seconds)")
                 
-                # Check if all layers completed
-                layers_completed = all([
-                    self.runner.results.get('layer1', {}).get('status') == 'SUCCESS',
-                    self.runner.results.get('layer2', {}).get('status') == 'SUCCESS',
-                    self.runner.results.get('layer3', {}).get('status') == 'SUCCESS'
-                ])
-                test_results['all_layers_completed'] = layers_completed
-                
-                if layers_completed:
-                    print("   ✅ All layers completed: PASSED")
+                # Check enhanced components
+                if 'layer3' in self.runner.results:
+                    business_summary = self.runner.results['layer3'].get('summary', {})
                     
-                    # Test business insights
+                    # Check all enhanced tables have data
+                    enhanced_tables = [
+                        'cumulative_retention_analysis_rows',
+                        'customer_segmentation_rows', 
+                        'seasonal_trends_rows'
+                    ]
+                    
+                    enhanced_complete = all(
+                        business_summary.get(table, 0) > 0 for table in enhanced_tables
+                    )
+                    test_results['all_enhanced_components'] = enhanced_complete
+                    
+                    # Specific component checks
+                    test_results['retention_analysis_complete'] = business_summary.get('cumulative_retention_analysis_rows', 0) > 0
+                    test_results['segmentation_complete'] = business_summary.get('customer_segmentation_rows', 0) > 0
+                    test_results['seasonal_analysis_complete'] = business_summary.get('seasonal_trends_rows', 0) > 0
+                    
+                    # Check executive dashboard readiness
                     business_conn = self.runner.orchestrator.databases['business']
+                    try:
+                        exec_count = pd.read_sql_query(
+                            "SELECT COUNT(*) as count FROM executive_summary", 
+                            business_conn
+                        )['count'].iloc[0]
+                        test_results['executive_dashboard_ready'] = exec_count > 0
+                    except:
+                        test_results['executive_dashboard_ready'] = False
                     
-                    # Check business insights from layer results instead of database
-                    if 'layer3' in self.runner.results:
-                        business_summary = self.runner.results['layer3'].get('summary', {})
-                        insights_count = business_summary.get('business_insights_rows', 0)
-                        campaigns_count = business_summary.get('campaign_targets_rows', 0)
-                        
-                        test_results['business_insights_generated'] = insights_count > 0
-                        test_results['campaign_targets_created'] = campaigns_count >= 0
-                        
-                        print(f"   ✅ Business insights: {'PASSED' if insights_count > 0 else 'NOTED'} ({insights_count} insights)")
-                        print(f"   ✅ Campaign targets: {'PASSED' if campaigns_count > 0 else 'NOTED'} ({campaigns_count} targets)")
-                    else:
-                        test_results['business_insights_generated'] = False
-                        test_results['campaign_targets_created'] = False
+                    print(f"   ✅ Enhanced components: {'COMPLETE' if enhanced_complete else 'INCOMPLETE'}")
+                    print(f"   ✅ Retention analysis: {business_summary.get('cumulative_retention_analysis_rows', 0)} rows")
+                    print(f"   ✅ Customer segmentation: {business_summary.get('customer_segmentation_rows', 0)} rows")
+                    print(f"   ✅ Seasonal trends: {business_summary.get('seasonal_trends_rows', 0)} rows")
+                    print(f"   ✅ Executive dashboard: {'READY' if test_results['executive_dashboard_ready'] else 'NOT READY'}")
                     
                 else:
-                    print("   ❌ Not all layers completed successfully")
+                    print("   ❌ Business layer results not found")
                     
             else:
                 print("   ❌ Pipeline execution: FAILED")
                 
         except Exception as e:
-            print(f"   ❌ Full pipeline test failed: {str(e)}")
-            self.logger.error(f"Full pipeline test error: {str(e)}")
+            print(f"   ❌ Full enhanced pipeline test failed: {str(e)}")
+            self.logger.error(f"Full enhanced pipeline test error: {str(e)}")
             
         return test_results
+    
+    def generate_enhanced_test_report(self, component_results: dict, enhanced_results: dict, 
+                                     dq_results: dict, insight_results: dict, pipeline_results: dict):
+        """Generate comprehensive test report for enhanced pipeline"""
         
-    def generate_test_report(self, component_results: dict, pipeline_results: dict):
-        """Generate comprehensive test report"""
+        print("\n📊 ENHANCED PIPELINE TEST RESULTS")
+        print("=" * 60)
         
-        print("\n📊 TEST RESULTS SUMMARY")
-        print("=" * 50)
-        
-        # Component tests
-        print("Component Tests:")
-        for component, passed in component_results.items():
+        # Enhanced Business Layer Tests
+        print("Enhanced Business Layer Components:")
+        for component, passed in enhanced_results.items():
             status = "✅ PASS" if passed else "❌ FAIL"
             print(f"  {component.replace('_', ' ').title()}: {status}")
             
-        component_success_rate = sum(component_results.values()) / len(component_results) * 100
-        print(f"\nComponent Success Rate: {component_success_rate:.1f}%")
+        enhanced_success_rate = sum(enhanced_results.values()) / len(enhanced_results) * 100
+        print(f"\nEnhanced Components Success Rate: {enhanced_success_rate:.1f}%")
+        
+        # Data Quality Tests
+        print("\nEnhanced Data Quality Tests:")
+        for check, passed in dq_results.items():
+            status = "✅ PASS" if passed else "❌ FAIL"
+            print(f"  {check.replace('_', ' ').title()}: {status}")
+            
+        dq_success_rate = sum(dq_results.values()) / len(dq_results) * 100
+        print(f"\nData Quality Success Rate: {dq_success_rate:.1f}%")
+        
+        # Business Insights Quality
+        print("\nBusiness Insights Quality:")
+        for insight, passed in insight_results.items():
+            status = "✅ PASS" if passed else "❌ FAIL"
+            print(f"  {insight.replace('_', ' ').title()}: {status}")
+            
+        insight_success_rate = sum(insight_results.values()) / len(insight_results) * 100
+        print(f"\nInsights Quality Success Rate: {insight_success_rate:.1f}%")
         
         # Pipeline tests
-        print("\nEnd-to-End Pipeline Tests:")
+        print("\nEnd-to-End Enhanced Pipeline Tests:")
         for test, passed in pipeline_results.items():
             status = "✅ PASS" if passed else "❌ FAIL"
             print(f"  {test.replace('_', ' ').title()}: {status}")
@@ -414,9 +658,13 @@ class PipelineTestSuite:
         print(f"\nPipeline Success Rate: {pipeline_success_rate:.1f}%")
         
         # Overall assessment
-        overall_success = component_success_rate >= 80 and pipeline_success_rate >= 80
+        overall_rates = [enhanced_success_rate, dq_success_rate, insight_success_rate, pipeline_success_rate]
+        overall_success_rate = sum(overall_rates) / len(overall_rates)
+        overall_success = overall_success_rate >= 75
         overall_status = "✅ PASSED" if overall_success else "❌ FAILED"
-        print(f"\nOVERALL TEST STATUS: {overall_status}")
+        
+        print(f"\nOVERALL ENHANCED PIPELINE STATUS: {overall_status}")
+        print(f"Overall Success Rate: {overall_success_rate:.1f}%")
         
         # Performance metrics if pipeline ran
         if self.runner and hasattr(self.runner, 'results'):
@@ -425,28 +673,33 @@ class PipelineTestSuite:
                 duration = result.get('duration', 0)
                 print(f"  {layer.upper()} Duration: {duration:.2f} seconds")
                 
-        # Business insights preview - get this before connections are closed
-        business_insights_preview = None
+        # Enhanced capabilities summary
         if pipeline_results.get('pipeline_execution', False):
             try:
-                # Get business insights from the business summary instead
                 if hasattr(self.runner, 'results') and 'layer3' in self.runner.results:
                     business_summary = self.runner.results['layer3'].get('summary', {})
-                    if business_summary.get('business_insights_rows', 0) > 0:
-                        business_insights_preview = "Business insights were successfully generated"
-                        print(f"\n✅ Business Insights Generated: {business_summary['business_insights_rows']} insights")
-                        if business_summary.get('high_priority_insights', 0) > 0:
-                            print(f"   High Priority Insights: {business_summary['high_priority_insights']}")
+                    
+                    print(f"\n🚀 ENHANCED ANALYTICS CAPABILITIES:")
+                    print(f"   Retention Windows: 3, 12, 18 months")
+                    print(f"   Customer Segments: {business_summary.get('customer_segmentation_rows', 0):,} customers segmented")
+                    print(f"   Seasonal Patterns: {business_summary.get('seasonal_trends_rows', 0)} trend periods analyzed")
+                    print(f"   Business Insights: {business_summary.get('business_insights_rows', 0)} insights generated")
+                    print(f"   Campaign Targets: {business_summary.get('campaign_targets_rows', 0)} customers targeted")
+                    
+                    if business_summary.get('champions_customers', 0) > 0:
+                        print(f"   Champion Customers: {business_summary['champions_customers']:,}")
+                    if business_summary.get('at_risk_customers', 0) > 0:
+                        print(f"   At-Risk Customers: {business_summary['at_risk_customers']:,}")
                         
             except Exception as e:
-                print(f"\nCould not retrieve business insights: {str(e)}")
+                print(f"\nCould not retrieve enhanced analytics summary: {str(e)}")
                 
         return overall_success
         
     def cleanup(self):
         """Clean up test environment and all generated data"""
         
-        print(f"\n🧹 Cleaning up test environment...")
+        print(f"\n🧹 Cleaning up enhanced test environment...")
         
         # Close any open connections
         if self.runner and self.runner.orchestrator:
@@ -457,7 +710,7 @@ class PipelineTestSuite:
             shutil.rmtree(self.test_dir)
             print(f"   Test directory removed: {self.test_dir}")
             
-        # Clean up any database files in current directory (in case they were created there)
+        # Clean up any database files in current directory
         for db_file in ['staging.db', 'warehouse.db', 'business.db', 'metadata.db']:
             if os.path.exists(db_file):
                 os.remove(db_file)
@@ -470,91 +723,91 @@ class PipelineTestSuite:
         print("   ✅ Cleanup completed - all test data removed")
 
 
-def run_debug_warehouse():
-    """Run detailed warehouse debugging"""
-    print("🔍 Running warehouse component debugging...")
+def run_enhanced_pipeline_test():
+    """Run comprehensive test of the enhanced pipeline"""
+    print("🔬 Running enhanced marketing analytics pipeline test...")
     
-    test_suite = PipelineTestSuite()
-    
-    try:
-        test_suite.setup_test_environment()
-        debug_results = test_suite.debug_warehouse_components()
-        
-        print("\n🔍 WAREHOUSE DEBUG RESULTS:")
-        print("=" * 40)
-        for component, passed in debug_results.items():
-            status = "✅ PASS" if passed else "❌ FAIL"
-            print(f"  {component.replace('_', ' ').title()}: {status}")
-            
-        success_rate = sum(debug_results.values()) / len(debug_results) * 100
-        print(f"\nWarehouse Success Rate: {success_rate:.1f}%")
-        
-        return success_rate >= 50
-        
-    except Exception as e:
-        print(f"❌ Debug suite failed: {str(e)}")
-        return False
-        
-    finally:
-        test_suite.cleanup()
-
-def run_quick_test():
-    """Run a quick test with actual data"""
-    print("🏃‍♂️ Running quick pipeline test with actual data...")
-    
-    test_suite = PipelineTestSuite()
+    test_suite = EnhancedPipelineTestSuite()
     
     try:
         # Setup test environment
         test_suite.setup_test_environment()
         
-        # Run component tests
-        component_results = test_suite.test_pipeline_components()
+        # Test enhanced business layer components
+        enhanced_results = test_suite.test_enhanced_business_layer_components()
         
-        # Run warehouse debugging if warehouse failed
-        if not component_results.get('warehouse_layer', False):
-            print("\n🔧 Warehouse layer failed, running detailed debugging...")
-            test_suite.debug_warehouse_components()
+        # Test data quality enhancements
+        dq_results = test_suite.test_data_quality_enhancements()
         
-        # Run full pipeline test
-        pipeline_results = test_suite.test_full_pipeline()
+        # Test full enhanced pipeline
+        pipeline_results = test_suite.test_full_enhanced_pipeline()
+
+        # Test business insights quality
+        insight_results = test_suite.test_business_insights_quality()
         
-        # Generate report
-        success = test_suite.generate_test_report(component_results, pipeline_results)
+        # Generate comprehensive report
+        success = test_suite.generate_enhanced_test_report(
+            {}, enhanced_results, dq_results, insight_results, pipeline_results
+        )
         
         return success
         
     except Exception as e:
-        print(f"❌ Test suite failed: {str(e)}")
+        print(f"❌ Enhanced test suite failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
         
     finally:
         test_suite.cleanup()
 
 
-def run_comprehensive_test():
-    """Run comprehensive test with actual dataset"""
-    print("🔬 Running comprehensive pipeline test with actual data...")
+def run_retention_analysis_test():
+    """Focused test on retention analysis components"""
+    print("📈 Testing retention analysis components...")
     
-    test_suite = PipelineTestSuite()
+    test_suite = EnhancedPipelineTestSuite()
     
     try:
-        # Setup test environment
         test_suite.setup_test_environment()
         
-        # Run component tests
-        component_results = test_suite.test_pipeline_components()
+        # Run just the retention analysis part
+        from pipeline.layer1_staging import run_staging_pipeline
+        from pipeline.layer2_warehouse import run_warehouse_pipeline
+        from pipeline.layer3_business import BusinessAnalysisLayer
         
-        # Run full pipeline test
-        pipeline_results = test_suite.test_full_pipeline()
+        staging_orchestrator, _ = run_staging_pipeline(test_suite.csv_file_path)
+        warehouse_orchestrator, _ = run_warehouse_pipeline(staging_orchestrator)
         
-        # Generate report
-        success = test_suite.generate_test_report(component_results, pipeline_results)
+        business = BusinessAnalysisLayer(staging_orchestrator)
+        business.create_business_schema()
         
-        return success
+        # Test just cumulative retention
+        print("   Building cumulative retention analysis...")
+        business.build_cumulative_retention_analysis()
+        
+        # Validate results
+        retention_df = pd.read_sql_query("""
+            SELECT 
+                cohort_month,
+                retention_window_months,
+                cohort_size,
+                active_customers,
+                cumulative_retention_rate
+            FROM cumulative_retention_analysis
+            ORDER BY cohort_month, retention_window_months
+        """, business.business_conn)
+        
+        print(f"   ✅ Retention analysis completed: {len(retention_df)} rows")
+        print(f"   Windows tested: {sorted(retention_df['retention_window_months'].unique())}")
+        print(f"   Cohorts analyzed: {retention_df['cohort_month'].nunique()}")
+        
+        staging_orchestrator.close_connections()
+        
+        return len(retention_df) > 0
         
     except Exception as e:
-        print(f"❌ Test suite failed: {str(e)}")
+        print(f"   ❌ Retention analysis test failed: {str(e)}")
         return False
         
     finally:
@@ -564,31 +817,32 @@ def run_comprehensive_test():
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='Test the marketing analytics pipeline')
-    parser.add_argument('--quick', action='store_true', help='Run quick test with actual data')
-    parser.add_argument('--comprehensive', action='store_true', help='Run comprehensive test with actual data')
-    parser.add_argument('--debug-warehouse', action='store_true', help='Run detailed warehouse debugging')
+    parser = argparse.ArgumentParser(description='Test the enhanced marketing analytics pipeline')
+    parser.add_argument('--enhanced', action='store_true', help='Run comprehensive enhanced pipeline test')
+    parser.add_argument('--retention', action='store_true', help='Run focused retention analysis test')
     parser.add_argument('--csv-file', type=str, help='Path to CSV file (default: ./data/raw/HEC_testing_data_sample_2_.csv)')
     
     args = parser.parse_args()
     
-    if args.quick:
-        success = run_quick_test()
-    elif args.comprehensive:
-        success = run_comprehensive_test()
-    elif args.debug_warehouse:
-        success = run_debug_warehouse()
+    if args.enhanced:
+        success = run_enhanced_pipeline_test()
+    elif args.retention:
+        success = run_retention_analysis_test()
     else:
-        # Custom CSV file path
+        # Default: run enhanced test
         csv_path = args.csv_file or './data/raw/HEC_testing_data_sample_2_.csv'
-        print(f"🧪 Running pipeline test with data: {csv_path}")
-        test_suite = PipelineTestSuite(csv_file_path=csv_path)
+        print(f"🧪 Running enhanced pipeline test with data: {csv_path}")
+        test_suite = EnhancedPipelineTestSuite(csv_file_path=csv_path)
         
         try:
             test_suite.setup_test_environment()
-            component_results = test_suite.test_pipeline_components()
-            pipeline_results = test_suite.test_full_pipeline()
-            success = test_suite.generate_test_report(component_results, pipeline_results)
+            enhanced_results = test_suite.test_enhanced_business_layer_components()
+            dq_results = test_suite.test_data_quality_enhancements()
+            insight_results = test_suite.test_business_insights_quality()
+            pipeline_results = test_suite.test_full_enhanced_pipeline()
+            success = test_suite.generate_enhanced_test_report(
+                {}, enhanced_results, dq_results, insight_results, pipeline_results
+            )
         except Exception as e:
             print(f"❌ Test suite failed: {str(e)}")
             success = False

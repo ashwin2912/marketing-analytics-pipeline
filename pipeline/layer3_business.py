@@ -63,6 +63,22 @@ class BusinessAnalysisLayer:
             )
         """)
         
+        # Cumulative Retention Analysis (addresses missing requirement)
+        self.business_conn.execute("""
+            CREATE TABLE IF NOT EXISTS cumulative_retention_analysis (
+                cohort_month TEXT,
+                retention_window_months INTEGER,  -- 3, 12, 18
+                cohort_size INTEGER,
+                active_customers INTEGER,
+                cumulative_retention_rate REAL,
+                avg_purchase_frequency REAL,
+                total_revenue REAL,
+                avg_customer_value REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (cohort_month, retention_window_months)
+            )
+        """)
+        
         # Customer lifetime value analysis
         self.business_conn.execute("""
             CREATE TABLE IF NOT EXISTS customer_ltv_analysis (
@@ -75,6 +91,20 @@ class BusinessAnalysisLayer:
                 days_active INTEGER,
                 predicted_ltv_score INTEGER,
                 churn_risk_score REAL
+            )
+        """)
+        
+        # Customer Segmentation (RFM Analysis)
+        self.business_conn.execute("""
+            CREATE TABLE IF NOT EXISTS customer_segmentation (
+                customer_id INTEGER PRIMARY KEY,
+                recency_score INTEGER,      -- 1-5 scale
+                frequency_score INTEGER,    -- 1-5 scale  
+                monetary_score INTEGER,     -- 1-5 scale
+                rfm_segment TEXT,          -- e.g., "Champions", "At Risk", etc.
+                segment_description TEXT,
+                recommended_strategy TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         
@@ -118,7 +148,21 @@ class BusinessAnalysisLayer:
                 PRIMARY KEY (snapshot_date, lifecycle_stage)
             )
         """)
-
+        
+        # Seasonal Trends Analysis
+        self.business_conn.execute("""
+            CREATE TABLE IF NOT EXISTS seasonal_trends (
+                period_type TEXT,          -- 'monthly', 'quarterly'
+                period_value TEXT,         -- '01' for Jan, 'Q1' for Q1
+                avg_sales REAL,
+                avg_orders INTEGER,
+                avg_customers INTEGER,
+                seasonal_index REAL,       -- compared to average
+                trend_direction TEXT,      -- 'growing', 'declining', 'stable'
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (period_type, period_value)
+            )
+        """)
         
         self.business_conn.commit()
         self.logger.info("Business analysis schema created successfully")
@@ -241,6 +285,79 @@ class BusinessAnalysisLayer:
             self.orchestrator.log_pipeline_run('BUSINESS', 'cohort_analysis', 'FAILED', 0, str(e))
             self.logger.error(f"Failed to build cohort analysis: {str(e)}")
             raise
+
+    def build_cumulative_retention_analysis(self) -> str:
+        """Build cumulative retention analysis for 3, 12, and 18 month windows"""
+        
+        run_id = self.orchestrator.log_pipeline_run('BUSINESS', 'cumulative_retention_analysis', 'STARTED')
+        
+        try:
+            # Clear existing data
+            self.business_conn.execute("DELETE FROM cumulative_retention_analysis")
+            
+            # Build cumulative retention for each window
+            for window_months in [3, 12, 18]:
+                self.business_conn.execute("""
+                    INSERT INTO cumulative_retention_analysis (
+                        cohort_month, retention_window_months, cohort_size, 
+                        active_customers, cumulative_retention_rate, 
+                        avg_purchase_frequency, total_revenue, avg_customer_value
+                    )
+                    WITH cohort_sizes AS (
+                        SELECT 
+                            first_order_cohort_month as cohort_month,
+                            COUNT(DISTINCT customer_id) as cohort_size
+                        FROM warehouse.dim_customer
+                        WHERE first_order_cohort_month IS NOT NULL
+                        GROUP BY first_order_cohort_month
+                    ),
+                    cohort_activity AS (
+                        SELECT 
+                            c.first_order_cohort_month as cohort_month,
+                            COUNT(DISTINCT f.customer_id) as active_customers,
+                            COUNT(DISTINCT f.order_id) as total_orders,
+                            SUM(f.sales_amount) as total_revenue
+                        FROM warehouse.fact_sales f
+                        JOIN warehouse.dim_date d ON f.date_id = d.date_id
+                        JOIN warehouse.dim_customer c ON f.customer_id = c.customer_id
+                        WHERE (d.year - c.first_order_cohort_year) * 12 + 
+                              (d.month - CAST(substr(c.first_order_cohort_month, 6, 2) AS INTEGER)) 
+                              BETWEEN 0 AND ?
+                        GROUP BY c.first_order_cohort_month
+                    )
+                    SELECT 
+                        ca.cohort_month,
+                        ? as retention_window_months,
+                        cs.cohort_size,
+                        ca.active_customers,
+                        ROUND(CAST(ca.active_customers AS FLOAT) / cs.cohort_size * 100, 2) as cumulative_retention_rate,
+                        ROUND(CAST(ca.total_orders AS FLOAT) / ca.active_customers, 2) as avg_purchase_frequency,
+                        ca.total_revenue,
+                        ROUND(ca.total_revenue / ca.active_customers, 2) as avg_customer_value
+                    FROM cohort_activity ca
+                    JOIN cohort_sizes cs ON ca.cohort_month = cs.cohort_month
+                    WHERE cs.cohort_size >= 10 
+                    ORDER BY ca.cohort_month
+                """, (window_months, window_months))
+            
+            # Get row count
+            cursor = self.business_conn.execute("SELECT COUNT(*) FROM cumulative_retention_analysis")
+            row_count = cursor.fetchone()[0]
+            
+            self.business_conn.commit()
+            
+            # Run data quality checks
+            self._run_cumulative_retention_quality_checks(run_id)
+            
+            self.orchestrator.log_pipeline_run('BUSINESS', 'cumulative_retention_analysis', 'SUCCESS', row_count)
+            self.logger.info(f"Cumulative retention analysis built with {row_count} rows")
+            
+            return run_id
+            
+        except Exception as e:
+            self.orchestrator.log_pipeline_run('BUSINESS', 'cumulative_retention_analysis', 'FAILED', 0, str(e))
+            self.logger.error(f"Failed to build cumulative retention analysis: {str(e)}")
+            raise
             
     def build_customer_ltv_analysis(self) -> str:
         """Build customer lifetime value analysis"""
@@ -324,6 +441,169 @@ class BusinessAnalysisLayer:
         except Exception as e:
             self.orchestrator.log_pipeline_run('BUSINESS', 'customer_ltv_analysis', 'FAILED', 0, str(e))
             self.logger.error(f"Failed to build customer LTV analysis: {str(e)}")
+            raise
+
+    def build_customer_segmentation(self) -> str:
+        """Build RFM customer segmentation analysis"""
+        
+        run_id = self.orchestrator.log_pipeline_run('BUSINESS', 'customer_segmentation', 'STARTED')
+        
+        try:
+            # Clear existing data
+            self.business_conn.execute("DELETE FROM customer_segmentation")
+            
+            # Build RFM segmentation
+            self.business_conn.execute("""
+                INSERT INTO customer_segmentation (
+                    customer_id, recency_score, frequency_score, monetary_score,
+                    rfm_segment, segment_description, recommended_strategy
+                )
+                WITH dataset_dates AS (
+                    SELECT MAX(full_date) as max_date FROM warehouse.dim_date
+                ),
+                customer_recency AS (
+                    SELECT 
+                        c.customer_id,
+                        c.total_orders,
+                        c.total_spent,
+                        -- Calculate recency relative to dataset max date, not current date
+                        julianday(dd.max_date) - julianday(c.last_order_date) as days_since_last_order_relative
+                    FROM warehouse.dim_customer c
+                    CROSS JOIN dataset_dates dd
+                ),
+                rfm_scores AS (
+                    SELECT 
+                        customer_id,
+                        -- Recency Score (1-5, 5 = most recent) - relative to dataset
+                        CASE 
+                            WHEN days_since_last_order_relative <= 30 THEN 5
+                            WHEN days_since_last_order_relative <= 60 THEN 4
+                            WHEN days_since_last_order_relative <= 90 THEN 3
+                            WHEN days_since_last_order_relative <= 180 THEN 2
+                            ELSE 1
+                        END as recency_score,
+                        -- Frequency Score (1-5, 5 = highest frequency)
+                        CASE 
+                            WHEN total_orders >= 10 THEN 5
+                            WHEN total_orders >= 5 THEN 4
+                            WHEN total_orders >= 3 THEN 3
+                            WHEN total_orders >= 2 THEN 2
+                            ELSE 1
+                        END as frequency_score,
+                        -- Monetary Score (1-5, 5 = highest value)
+                        NTILE(5) OVER (ORDER BY total_spent) as monetary_score
+                    FROM customer_recency
+                ),
+                segmented AS (
+                    SELECT *,
+                    CASE 
+                        WHEN recency_score >= 4 AND frequency_score >= 4 AND monetary_score >= 4 THEN 'Champions'
+                        WHEN recency_score >= 3 AND frequency_score >= 3 AND monetary_score >= 3 THEN 'Loyal Customers'
+                        WHEN recency_score >= 4 AND frequency_score <= 2 THEN 'New Customers'
+                        WHEN recency_score <= 3 AND frequency_score >= 3 THEN 'At Risk'  -- Changed from <= 2
+                        WHEN recency_score <= 2 AND frequency_score <= 2 AND monetary_score >= 3 THEN 'Cannot Lose Them'
+                        WHEN recency_score <= 2 THEN 'Lost Customers'  -- Changed from <= 1
+                        ELSE 'Others'
+                    END as rfm_segment
+                    FROM rfm_scores
+                )
+                SELECT 
+                    customer_id, recency_score, frequency_score, monetary_score, rfm_segment,
+                    CASE rfm_segment
+                        WHEN 'Champions' THEN 'Best customers who bought recently and frequently'
+                        WHEN 'Loyal Customers' THEN 'Regular customers with good value'
+                        WHEN 'New Customers' THEN 'Recent customers with potential'
+                        WHEN 'At Risk' THEN 'Good customers who haven''t purchased recently'
+                        WHEN 'Cannot Lose Them' THEN 'High-value customers at risk of churning'
+                        WHEN 'Lost Customers' THEN 'Customers who haven''t purchased in long time'
+                        ELSE 'General customer segment'
+                    END as segment_description,
+                    CASE rfm_segment
+                        WHEN 'Champions' THEN 'Upsell premium products, ask for reviews'
+                        WHEN 'Loyal Customers' THEN 'Recommend related products, loyalty programs'
+                        WHEN 'New Customers' THEN 'Onboarding campaigns, product education'
+                        WHEN 'At Risk' THEN 'Reactivation campaigns with discounts'
+                        WHEN 'Cannot Lose Them' THEN 'Immediate intervention, VIP treatment'
+                        WHEN 'Lost Customers' THEN 'Win-back campaigns with strong incentives'
+                        ELSE 'Standard marketing approach'
+                    END as recommended_strategy
+                FROM segmented
+            """)
+            
+            # Get row count
+            cursor = self.business_conn.execute("SELECT COUNT(*) FROM customer_segmentation")
+            row_count = cursor.fetchone()[0]
+            
+            self.business_conn.commit()
+            self.orchestrator.log_pipeline_run('BUSINESS', 'customer_segmentation', 'SUCCESS', row_count)
+            self.logger.info(f"Customer segmentation built with {row_count} rows")
+            
+            return run_id
+            
+        except Exception as e:
+            self.orchestrator.log_pipeline_run('BUSINESS', 'customer_segmentation', 'FAILED', 0, str(e))
+            self.logger.error(f"Failed to build customer segmentation: {str(e)}")
+            raise
+
+    def build_seasonal_trends(self) -> str:
+        """Build seasonal trends analysis"""
+        
+        run_id = self.orchestrator.log_pipeline_run('BUSINESS', 'seasonal_trends', 'STARTED')
+        
+        try:
+            # Clear existing data
+            self.business_conn.execute("DELETE FROM seasonal_trends")
+            
+            # Monthly seasonal trends
+            self.business_conn.execute("""
+                INSERT INTO seasonal_trends (
+                    period_type, period_value, avg_sales, avg_orders, 
+                    avg_customers, seasonal_index, trend_direction
+                )
+                WITH monthly_avg AS (
+                    SELECT AVG(total_sales) as overall_avg_sales FROM monthly_metrics
+                ),
+                monthly_trends AS (
+                    SELECT 
+                        'monthly' as period_type,
+                        substr(period_month, 6, 2) as period_value,
+                        AVG(total_sales) as avg_sales,
+                        AVG(total_orders) as avg_orders,
+                        AVG(unique_customers) as avg_customers
+                    FROM monthly_metrics
+                    GROUP BY substr(period_month, 6, 2)
+                )
+                SELECT 
+                    mt.period_type,
+                    mt.period_value,
+                    ROUND(mt.avg_sales, 2) as avg_sales,
+                    ROUND(mt.avg_orders, 0) as avg_orders,
+                    ROUND(mt.avg_customers, 0) as avg_customers,
+                    ROUND(mt.avg_sales / ma.overall_avg_sales, 3) as seasonal_index,
+                    CASE 
+                        WHEN mt.avg_sales / ma.overall_avg_sales > 1.1 THEN 'strong_positive'
+                        WHEN mt.avg_sales / ma.overall_avg_sales > 1.05 THEN 'positive'
+                        WHEN mt.avg_sales / ma.overall_avg_sales < 0.9 THEN 'strong_negative'
+                        WHEN mt.avg_sales / ma.overall_avg_sales < 0.95 THEN 'negative'
+                        ELSE 'stable'
+                    END as trend_direction
+                FROM monthly_trends mt
+                CROSS JOIN monthly_avg ma
+            """)
+            
+            # Get row count
+            cursor = self.business_conn.execute("SELECT COUNT(*) FROM seasonal_trends")
+            row_count = cursor.fetchone()[0]
+            
+            self.business_conn.commit()
+            self.orchestrator.log_pipeline_run('BUSINESS', 'seasonal_trends', 'SUCCESS', row_count)
+            self.logger.info(f"Seasonal trends built with {row_count} rows")
+            
+            return run_id
+            
+        except Exception as e:
+            self.orchestrator.log_pipeline_run('BUSINESS', 'seasonal_trends', 'FAILED', 0, str(e))
+            self.logger.error(f"Failed to build seasonal trends: {str(e)}")
             raise
             
     def build_campaign_targets(self) -> str:
@@ -523,9 +803,8 @@ class BusinessAnalysisLayer:
             self.logger.error(f"Failed to build customer lifecycle snapshot: {str(e)}")
             raise
 
-            
     def generate_business_insights(self) -> str:
-        """Generate business insights and recommendations"""
+        """Generate business insights and recommendations - ENHANCED"""
         
         run_id = self.orchestrator.log_pipeline_run('BUSINESS', 'business_insights', 'STARTED')
         
@@ -579,6 +858,31 @@ class BusinessAnalysisLayer:
                     'priority_level': 2
                 })
             
+            # NEW: Cumulative retention insights
+            cursor = self.business_conn.execute("""
+                SELECT 
+                    cohort_month,
+                    AVG(CASE WHEN retention_window_months = 3 THEN cumulative_retention_rate END) as retention_3m,
+                    AVG(CASE WHEN retention_window_months = 12 THEN cumulative_retention_rate END) as retention_12m,
+                    AVG(CASE WHEN retention_window_months = 18 THEN cumulative_retention_rate END) as retention_18m
+                FROM cumulative_retention_analysis
+                GROUP BY cohort_month
+                ORDER BY retention_12m DESC
+                LIMIT 1
+            """)
+            result = cursor.fetchone()
+            
+            if result and result[2]:  # Check if 12m retention exists
+                insights.append({
+                    'insight_id': 'RET_001',
+                    'insight_type': 'RETENTION',
+                    'insight_title': 'Best Retention Cohort Performance',
+                    'insight_description': f'Cohort {result[0]} shows strongest retention: 3m={result[1]:.1f}%, 12m={result[2]:.1f}%, 18m={result[3]:.1f}%',
+                    'metric_value': result[2],
+                    'recommendation': 'Analyze acquisition channels and onboarding for this cohort to replicate success',
+                    'priority_level': 1
+                })
+            
             # Insight 3: High-value at-risk customers
             cursor = self.business_conn.execute("""
                 SELECT 
@@ -598,6 +902,29 @@ class BusinessAnalysisLayer:
                 'recommendation': 'Immediate intervention with personalized offers for high-LTV at-risk customers',
                 'priority_level': 1
             })
+            
+            # NEW: Segmentation insights
+            cursor = self.business_conn.execute("""
+                SELECT 
+                    rfm_segment,
+                    COUNT(*) as segment_size,
+                    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM customer_segmentation), 1) as segment_percent
+                FROM customer_segmentation
+                WHERE rfm_segment IN ('Champions', 'At Risk', 'Cannot Lose Them')
+                ORDER BY segment_size DESC
+            """)
+            
+            for row in cursor.fetchall():
+                segment, size, percent = row
+                insights.append({
+                    'insight_id': f'SEG_{segment[:3].upper()}',
+                    'insight_type': 'SEGMENTATION',
+                    'insight_title': f'{segment} Segment Analysis',
+                    'insight_description': f'{size:,} customers ({percent}%) in {segment} segment',
+                    'metric_value': percent,
+                    'recommendation': f'Focus on {segment.lower()} with targeted campaigns',
+                    'priority_level': 2 if segment == 'Champions' else 1
+                })
             
             # Insight 4: Campaign opportunity
             cursor = self.business_conn.execute("""
@@ -622,6 +949,37 @@ class BusinessAnalysisLayer:
                     'metric_value': result[1],
                     'recommendation': f'Launch {result[0]} campaign immediately',
                     'priority_level': 1
+                })
+                
+            # NEW: Seasonal insights
+            cursor = self.business_conn.execute("""
+                SELECT 
+                    period_value as month,
+                    seasonal_index,
+                    trend_direction
+                FROM seasonal_trends
+                WHERE period_type = 'monthly'
+                ORDER BY seasonal_index DESC
+                LIMIT 1
+            """)
+            result = cursor.fetchone()
+            
+            if result:
+                month_names = {
+                    '01': 'January', '02': 'February', '03': 'March', '04': 'April',
+                    '05': 'May', '06': 'June', '07': 'July', '08': 'August',
+                    '09': 'September', '10': 'October', '11': 'November', '12': 'December'
+                }
+                month_name = month_names.get(result[0], result[0])
+                
+                insights.append({
+                    'insight_id': 'SEAS_001',
+                    'insight_type': 'SEASONAL',
+                    'insight_title': 'Peak Seasonal Performance',
+                    'insight_description': f'{month_name} is peak month with {result[1]:.2f}x average performance ({result[2]} trend)',
+                    'metric_value': result[1],
+                    'recommendation': f'Increase marketing spend and inventory for {month_name}',
+                    'priority_level': 2
                 })
             
             # Insert insights into table
@@ -688,6 +1046,36 @@ class BusinessAnalysisLayer:
         except Exception as e:
             self.orchestrator.log_data_quality_check(
                 run_id, 'cohort_analysis', 'BUSINESS_RULE', 'valid_retention_rate_check',
+                "0", "ERROR", "FAILED", str(e)
+            )
+
+    def _run_cumulative_retention_quality_checks(self, run_id: str):
+        """Advanced DQ checks for retention analysis"""
+        
+        # Check retention rates don't increase over time (logical impossibility)
+        try:
+            cursor = self.business_conn.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT cohort_month,
+                        MAX(CASE WHEN retention_window_months = 3 THEN cumulative_retention_rate END) as ret_3m,
+                        MAX(CASE WHEN retention_window_months = 12 THEN cumulative_retention_rate END) as ret_12m,
+                        MAX(CASE WHEN retention_window_months = 18 THEN cumulative_retention_rate END) as ret_18m
+                    FROM cumulative_retention_analysis 
+                    GROUP BY cohort_month
+                    HAVING ret_12m > ret_3m OR ret_18m > ret_12m
+                )
+            """)
+            invalid_trends = cursor.fetchone()[0]
+            
+            status = "PASSED" if invalid_trends == 0 else "FAILED"
+            
+            self.orchestrator.log_data_quality_check(
+                run_id, 'cumulative_retention_analysis', 'BUSINESS_RULE', 'retention_trend_logic_check',
+                "0", str(invalid_trends), status
+            )
+        except Exception as e:
+            self.orchestrator.log_data_quality_check(
+                run_id, 'cumulative_retention_analysis', 'BUSINESS_RULE', 'retention_trend_logic_check',
                 "0", "ERROR", "FAILED", str(e)
             )
             
@@ -771,7 +1159,11 @@ class BusinessAnalysisLayer:
         summary = {}
         
         # Table row counts
-        tables = ['monthly_metrics', 'cohort_analysis', 'customer_ltv_analysis', 'campaign_targets', 'business_insights','customer_lifecycle_snapshot']
+        tables = [
+            'monthly_metrics', 'cohort_analysis', 'cumulative_retention_analysis',
+            'customer_ltv_analysis', 'customer_segmentation', 'seasonal_trends',
+            'campaign_targets', 'business_insights', 'customer_lifecycle_snapshot'
+        ]
         for table in tables:
             cursor = self.business_conn.execute(f"SELECT COUNT(*) FROM {table}")
             summary[f'{table}_rows'] = cursor.fetchone()[0]
@@ -802,11 +1194,24 @@ class BusinessAnalysisLayer:
             'high_priority_insights': result[1]
         })
         
+        # Segmentation summary
+        cursor = self.business_conn.execute("""
+            SELECT 
+                COUNT(CASE WHEN rfm_segment = 'Champions' THEN 1 END) as champions,
+                COUNT(CASE WHEN rfm_segment IN ('At Risk', 'Cannot Lose Them') THEN 1 END) as at_risk
+            FROM customer_segmentation
+        """)
+        result = cursor.fetchone()
+        summary.update({
+            'champions_customers': result[0] if result[0] else 0,
+            'at_risk_customers': result[1] if result[1] else 0
+        })
+        
         return summary
 
 
 def run_business_analysis_pipeline(orchestrator=None):
-    """Main function to run the business analysis pipeline"""
+    """Main function to run the business analysis pipeline - ENHANCED"""
     
     # Use provided orchestrator or initialize new one
     if orchestrator is None:
@@ -819,16 +1224,27 @@ def run_business_analysis_pipeline(orchestrator=None):
         # Create schema
         business.create_business_schema()
         
-        # Build analysis tables
+        # Core required tables
         business.logger.info("Building monthly metrics...")
         business.build_monthly_metrics()
         
         business.logger.info("Building cohort analysis...")
         business.build_cohort_analysis()
         
+        # NEW: Critical missing requirement
+        business.logger.info("Building cumulative retention analysis...")
+        business.build_cumulative_retention_analysis()
+        
         business.logger.info("Building customer LTV analysis...")
         business.build_customer_ltv_analysis()
-
+        
+        # Advanced analytics for differentiation
+        business.logger.info("Building customer segmentation...")
+        business.build_customer_segmentation()
+        
+        business.logger.info("Building seasonal trends...")
+        business.build_seasonal_trends()
+        
         business.logger.info("Building customer lifecycle snapshot...")
         business.build_customer_lifecycle_snapshot()
         
@@ -847,7 +1263,10 @@ def run_business_analysis_pipeline(orchestrator=None):
         print("=" * 50)
         print(f"Monthly metrics: {summary['monthly_metrics_rows']:,} rows")
         print(f"Cohort analysis: {summary['cohort_analysis_rows']:,} rows")
+        print(f"Cumulative retention analysis: {summary['cumulative_retention_analysis_rows']:,} rows")
         print(f"Customer LTV analysis: {summary['customer_ltv_analysis_rows']:,} rows")
+        print(f"Customer segmentation: {summary['customer_segmentation_rows']:,} rows")
+        print(f"Seasonal trends: {summary['seasonal_trends_rows']:,} rows")
         print(f"Campaign targets: {summary['campaign_targets_rows']:,} rows")
         print(f"Customer lifecycle snapshot: {summary['customer_lifecycle_snapshot_rows']:,} rows")
         print(f"Business insights: {summary['business_insights_rows']:,} rows")
@@ -855,6 +1274,8 @@ def run_business_analysis_pipeline(orchestrator=None):
         print(f"Active campaigns ready: {summary['active_campaigns']:,}")
         print(f"Total campaign value: ${summary['total_campaign_value']:,.2f}")
         print(f"High priority insights: {summary['high_priority_insights']:,}")
+        print(f"Champions customers: {summary['champions_customers']:,}")
+        print(f"At-risk customers: {summary['at_risk_customers']:,}")
         
         # Show top insights
         insights_df = pd.read_sql_query("""
